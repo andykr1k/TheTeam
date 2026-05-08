@@ -11,18 +11,28 @@ import websockets
 from websockets.exceptions import ConnectionClosed
 from transformers import Sam3VideoModel, Sam3VideoProcessor
 
+from config import load_config
 
-PROMPT = "robot"
-HOST = "0.0.0.0"
-PORT = 8765
 
-MODEL_ID = "facebook/sam3"
-DEVICE = "cuda:7"
-DTYPE = torch.bfloat16
+CONFIG = load_config()
+SERVER_CONFIG = CONFIG.get("server", {})
 
-MIN_CONTOUR_AREA = 80
-APPROX_EPSILON = 1.5
-KEEP_PROCESSED_FRAMES = 4
+PROMPT = SERVER_CONFIG.get("prompt", "robot")
+HOST = SERVER_CONFIG.get("host", "0.0.0.0")
+PORT = int(SERVER_CONFIG.get("port", 8765))
+
+MODEL_ID = SERVER_CONFIG.get("model_id", "facebook/sam3")
+DEVICE = SERVER_CONFIG.get("device", "cuda:7")
+DTYPE_NAME = SERVER_CONFIG.get("dtype", "bfloat16")
+DTYPE = {
+    "bfloat16": torch.bfloat16,
+    "float16": torch.float16,
+    "float32": torch.float32,
+}[DTYPE_NAME]
+
+MIN_CONTOUR_AREA = float(SERVER_CONFIG.get("min_contour_area", 80))
+APPROX_EPSILON = float(SERVER_CONFIG.get("approx_epsilon", 1.5))
+KEEP_PROCESSED_FRAMES = int(SERVER_CONFIG.get("keep_processed_frames", 4))
 
 HEADER = struct.Struct("!Q")
 

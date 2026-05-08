@@ -1,0 +1,45 @@
+server:
+  host: "0.0.0.0"
+  port: 8765
+  prompt: "robot"
+  model_id: "facebook/sam3"
+  device: "cuda:7"
+  dtype: "bfloat16"
+  min_contour_area: 80
+  approx_epsilon: 1.5
+  keep_processed_frames: 4
+
+client:
+  server_url: "ws://<ip>:8765"
+  use_realsense: false
+  video_source: 0
+  camera_width: 1280
+  camera_height: 720
+  camera_fps: 30
+  jpeg_quality: 60
+  target_fps: 30
+  max_pending_frames: 90
+
+apriltags:
+  dictionary: "DICT_APRILTAG_36h11"
+  detect_scale: 1.0
+  # Boundary tags must be ordered: top-left, top-right, bottom-right, bottom-left.
+  boundary_tag_ids: [0,1,2,3]
+
+field:
+  width_m: 3.0
+  height_m: 2.0
+
+robots:
+  # Empty means every non-boundary tag is treated as a robot.
+  tag_ids: {4,5,6}
+  # Per robot tag id: [forward_m, left_m].
+  center_offsets_m: {}
+  heading_offset_rad: 0.0
+
+display:
+  map_size: [900, 650]
+  map_margin: 60
+  contour_window: "SAM3 contours"
+  camera_window: "AprilTag camera"
+  map_window: "Robot map"

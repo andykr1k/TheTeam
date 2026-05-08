@@ -812,6 +812,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "opencv-python" },
+    { name = "pyyaml" },
     { name = "torch" },
     { name = "torchvision" },
     { name = "transformers" },
@@ -821,6 +822,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "opencv-python", specifier = ">=4.13.0.92" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "torch", specifier = "==2.10.0" },
     { name = "torchvision", specifier = ">=0.25.0" },
     { name = "transformers", specifier = ">=5.8.0" },
