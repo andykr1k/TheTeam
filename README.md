@@ -36,6 +36,17 @@ Then run:
 uv run python client.py
 ```
 
+The client also starts a pose websocket for robot subscribers:
+
+```yaml
+pose_stream:
+  host: "0.0.0.0"
+  port: 8766
+```
+
+Each connected robot can subscribe to that pose stream and filter down to its
+own AprilTag ID with `mbot.py`.
+
 If `pyrealsense2` is not installed on the Pi, install Intel RealSense support
 there first. The current pipeline only streams RGB frames; depth is not needed
 for the top-down floor homography.
@@ -80,6 +91,30 @@ robots:
   center_offsets_m:
     21: [0.08, 0.0]  # forward_m, left_m
 ```
+
+Those robot names are included in the pose stream, but each `mbot.py` instance
+selects its own robot by `mbot.robot_tag_id` in `config.yaml`.
+
+## Mbot Subscriber
+
+Run this on each robot:
+
+```bash
+uv run python mbot.py
+```
+
+Per robot, change the config to point at the camera client's pose stream and to
+select the desired tracked tag:
+
+```yaml
+mbot:
+  pose_stream_url: "ws://<camera-client-ip>:8766"
+  robot_tag_id: 21
+```
+
+`mbot.py` prints JSON lines containing only that robot's `x`, `y`, and
+`theta`, plus the tag ID/name and timing metadata. Human-readable connection
+status goes to stderr so stdout stays machine-friendly.
 
 ## Windows
 

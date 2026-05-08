@@ -10,6 +10,7 @@ from collections import OrderedDict
 import cv2
 import numpy as np
 import websockets
+from websockets.exceptions import ConnectionClosed
 
 from config import load_config
 
@@ -24,6 +25,7 @@ APRILTAG_CONFIG = CONFIG.get("apriltags", {})
 FIELD_CONFIG = CONFIG.get("field", {})
 ROBOT_CONFIG = CONFIG.get("robots", {})
 DISPLAY_CONFIG = CONFIG.get("display", {})
+POSE_STREAM_CONFIG = CONFIG.get("pose_stream", {})
 
 SERVER_URL = CLIENT_CONFIG.get("server_url", "ws://127.0.0.1:8765")
 USE_REALSENSE = bool(CLIENT_CONFIG.get("use_realsense", False))
@@ -36,6 +38,9 @@ TARGET_FPS = float(CLIENT_CONFIG.get("target_fps", 30))
 MAX_PENDING_FRAMES = int(CLIENT_CONFIG.get("max_pending_frames", 90))
 REALSENSE_FALLBACK_TO_VIDEO = bool(CLIENT_CONFIG.get("realsense_fallback_to_video", True))
 REALSENSE_PROBE_TIMEOUT_S = float(CLIENT_CONFIG.get("realsense_probe_timeout_s", 5.0))
+POSE_STREAM_ENABLED = bool(POSE_STREAM_CONFIG.get("enabled", True))
+POSE_STREAM_HOST = str(POSE_STREAM_CONFIG.get("host", "0.0.0.0"))
+POSE_STREAM_PORT = int(POSE_STREAM_CONFIG.get("port", 8766))
 
 BOUNDARY_TAG_IDS = [int(tag_id) for tag_id in APRILTAG_CONFIG.get("boundary_tag_ids", [10, 11, 12, 13])]
 FIELD_WIDTH_M = float(FIELD_CONFIG.get("width_m", 3.0))
@@ -302,6 +307,70 @@ class AprilTagTracker:
         }
 
 
+class PoseBroadcaster:
+    def __init__(self):
+        self.latest_message = None
+        self.subscribers = set()
+
+    def subscribe(self):
+        queue = asyncio.Queue(maxsize=1)
+        if self.latest_message is not None:
+            queue.put_nowait(self.latest_message)
+        self.subscribers.add(queue)
+        return queue
+
+    def unsubscribe(self, queue):
+        self.subscribers.discard(queue)
+
+    def publish(self, message):
+        self.latest_message = message
+        for queue in list(self.subscribers):
+            if queue.full():
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+            try:
+                queue.put_nowait(message)
+            except asyncio.QueueFull:
+                pass
+
+
+def pose_message_for_state(frame_id, state):
+    robots = [
+        {
+            "id": int(robot["id"]),
+            "name": str(robot["name"]),
+            "x": float(robot["x"]),
+            "y": float(robot["y"]),
+            "theta": float(robot["theta"]),
+        }
+        for robot in state.get("robots", [])
+    ]
+    payload = {
+        "type": "robot_pose_update",
+        "timestamp": time.time(),
+        "frame_id": int(frame_id),
+        "ready": bool(state.get("ready", False)),
+        "calibrated": bool(state.get("calibrated", False)),
+        "missing_boundary": [int(tag_id) for tag_id in state.get("missing_boundary", [])],
+        "robots": robots,
+    }
+    return json.dumps(payload, separators=(",", ":"))
+
+
+async def handle_pose_stream_client(websocket, broadcaster):
+    queue = broadcaster.subscribe()
+    try:
+        while True:
+            message = await queue.get()
+            await websocket.send(message)
+    except ConnectionClosed:
+        pass
+    finally:
+        broadcaster.unsubscribe(queue)
+
+
 def transform_points(homography, points):
     points = np.asarray(points, dtype=np.float32).reshape(-1, 1, 2)
     return cv2.perspectiveTransform(points, homography).reshape(-1, 2)
@@ -536,7 +605,7 @@ def draw_sam_result(frame, result, e2e_ms):
     return frame
 
 
-async def send_frames(websocket, pending, stop):
+async def send_frames(websocket, pending, stop, pose_broadcaster):
     source = FrameSource()
     tracker = AprilTagTracker()
     frame_id = 0
@@ -553,6 +622,7 @@ async def send_frames(websocket, pending, stop):
             tags = tracker.detect(frame)
             was_calibrated = tracker.is_calibrated()
             state = tracker.map_state(tags)
+            pose_broadcaster.publish(pose_message_for_state(frame_id, state))
             if not was_calibrated and state.get("ready"):
                 print("Floor calibration locked. Press r to recalibrate.")
 
@@ -576,6 +646,7 @@ async def send_frames(websocket, pending, stop):
                 pending.clear()
                 print("Floor calibration reset. Show all boundary tags to calibrate again.")
                 state = tracker.map_state(tags, allow_calibration=False)
+                pose_broadcaster.publish(pose_message_for_state(frame_id, state))
                 display_frame = draw_tag_overlay(frame.copy(), tags, state)
                 map_frame = draw_map(state)
                 contour_frame = draw_segmentation_status(
@@ -649,25 +720,41 @@ async def receive_contours(websocket, pending, stop):
 async def main():
     pending = OrderedDict()
     stop = asyncio.Event()
+    pose_broadcaster = PoseBroadcaster()
 
-    async with websockets.connect(
-        SERVER_URL,
-        max_size=8 * 1024 * 1024,
-        max_queue=1,
-        compression=None,
-    ) as websocket:
-        send_task = asyncio.create_task(send_frames(websocket, pending, stop))
-        recv_task = asyncio.create_task(receive_contours(websocket, pending, stop))
-        try:
-            await asyncio.wait(
-                [send_task, recv_task],
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-        finally:
-            stop.set()
-            send_task.cancel()
-            recv_task.cancel()
-            cv2.destroyAllWindows()
+    async def run_tracking_session():
+        async with websockets.connect(
+            SERVER_URL,
+            max_size=8 * 1024 * 1024,
+            max_queue=1,
+            compression=None,
+        ) as websocket:
+            send_task = asyncio.create_task(send_frames(websocket, pending, stop, pose_broadcaster))
+            recv_task = asyncio.create_task(receive_contours(websocket, pending, stop))
+            try:
+                await asyncio.wait(
+                    [send_task, recv_task],
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            finally:
+                stop.set()
+                send_task.cancel()
+                recv_task.cancel()
+                cv2.destroyAllWindows()
+
+    if POSE_STREAM_ENABLED:
+        async with websockets.serve(
+            lambda websocket: handle_pose_stream_client(websocket, pose_broadcaster),
+            POSE_STREAM_HOST,
+            POSE_STREAM_PORT,
+            max_queue=1,
+            compression=None,
+        ):
+            print(f"robot pose stream listening ws://{POSE_STREAM_HOST}:{POSE_STREAM_PORT}")
+            await run_tracking_session()
+        return
+
+    await run_tracking_session()
 
 
 if __name__ == "__main__":

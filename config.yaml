@@ -21,6 +21,11 @@ client:
   target_fps: 30
   max_pending_frames: 90
 
+pose_stream:
+  enabled: true
+  host: "0.0.0.0"
+  port: 8766
+
 apriltags:
   dictionary: "DICT_APRILTAG_36h11"
   detect_scale: 1.0
@@ -37,6 +42,11 @@ robots:
   # Per robot tag id: [forward_m, left_m].
   center_offsets_m: {}
   heading_offset_rad: 0.0
+
+mbot:
+  pose_stream_url: "ws://141.212.114.250:8766"
+  robot_tag_id: 4
+  reconnect_delay_s: 1.0
 
 display:
   map_size: [900, 650]
