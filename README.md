@@ -24,7 +24,11 @@ For a RealSense camera, also set:
 ```yaml
 client:
   use_realsense: true
+  realsense_fallback_to_video: true
 ```
+
+If RealSense startup fails, the client will fall back to `client.video_source`
+instead of crashing the whole process.
 
 Then run:
 
@@ -40,6 +44,14 @@ for the top-down floor homography.
 
 The client automatically detects all AprilTags in the camera image. No manual
 pixel coordinates are needed.
+
+At startup, the client locks the floor plane the first time it sees all four
+boundary tags. After that, robot tags continue tracking against the frozen
+plane even if the boundary tags move or leave view. Press `r` in the client
+window any time you want to clear that calibration and lock a new floor plane.
+SAM segmentation is paused until that floor calibration is locked, and once it
+is locked the client only sends pixels from inside the calibrated floor
+boundary to the segmentation server.
 
 Set the four floor boundary tags in clockwise order in `config.yaml`:
 

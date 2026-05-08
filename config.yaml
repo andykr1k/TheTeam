@@ -10,8 +10,9 @@ server:
   keep_processed_frames: 4
 
 client:
-  server_url: "ws://<ip>:8765"
-  use_realsense: false
+  server_url: "ws://141.212.114.250:8765"
+  use_realsense: true
+  realsense_fallback_to_video: true
   video_source: 0
   camera_width: 1280
   camera_height: 720
@@ -32,7 +33,7 @@ field:
 
 robots:
   # Empty means every non-boundary tag is treated as a robot.
-  tag_ids: {4,5,6}
+  tag_ids: [4, 5, 6]
   # Per robot tag id: [forward_m, left_m].
   center_offsets_m: {}
   heading_offset_rad: 0.0

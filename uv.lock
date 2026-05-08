@@ -608,6 +608,18 @@ wheels = [
 ]
 
 [[package]]
+name = "pyrealsense2-macosx"
+version = "2.56.5"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/45/42/df369b9c8943395e8166dfc2006163279a850d7990e9c7fb7a0f0bdc4bbb/pyrealsense2_macosx-2.56.5-cp312-cp312-macosx_15_0_arm64.whl", hash = "sha256:7a0c2e124d74da97c3a928f0dc084c51f1473745a863db08cc2191bd2bdf8623", size = 4509608, upload-time = "2026-02-16T09:56:06.215Z" },
+    { url = "https://files.pythonhosted.org/packages/6b/f4/b4a0741f8a5e77495e64a88985327515decd86c64553103bbf4b1e11a8b8/pyrealsense2_macosx-2.56.5-cp313-cp313-macosx_15_0_arm64.whl", hash = "sha256:606aa36debd6b1f6179d7ca866161c16d5b60c6a2dfd95eadd10f0d6eee56c02", size = 4510296, upload-time = "2026-02-16T09:56:07.639Z" },
+    { url = "https://files.pythonhosted.org/packages/4e/fe/cae7d70604eb824c1800f8a3c94083c42b582bc47580f70a4954e1b3bc6c/pyrealsense2_macosx-2.56.5-cp313-cp313t-macosx_15_0_arm64.whl", hash = "sha256:244899dd086af774c8c76ae036a45eafa1dc54bb24b785903aa4a5aae7e5de22", size = 4645326, upload-time = "2026-02-16T09:56:09.576Z" },
+    { url = "https://files.pythonhosted.org/packages/e9/c4/7ae1e1292546be144f454f29e20124a7b3278f064ec88b7506300904ac4e/pyrealsense2_macosx-2.56.5-cp314-cp314-macosx_15_0_arm64.whl", hash = "sha256:4a037d67e01d5a1c5c3ff90de922d957ba78ad047201571e2156511e2619c066", size = 4514159, upload-time = "2026-02-16T09:56:11.519Z" },
+    { url = "https://files.pythonhosted.org/packages/b5/aa/84701f6fe963819978880df84d1f37a3685828ead183ee99f27fa1890177/pyrealsense2_macosx-2.56.5-cp314-cp314t-macosx_15_0_arm64.whl", hash = "sha256:2deb04f3025eaa9abdc57a42e213ad87b8cf047a1d338e0cfc37fa486efddf0f", size = 4645134, upload-time = "2026-02-16T09:56:13.214Z" },
+]
+
+[[package]]
 name = "pyyaml"
 version = "6.0.3"
 source = { registry = "https://pypi.org/simple" }
@@ -812,6 +824,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "opencv-python" },
+    { name = "pyrealsense2-macosx" },
     { name = "pyyaml" },
     { name = "torch" },
     { name = "torchvision" },
@@ -822,6 +835,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "opencv-python", specifier = ">=4.13.0.92" },
+    { name = "pyrealsense2-macosx", specifier = ">=2.56.5" },
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "torch", specifier = "==2.10.0" },
     { name = "torchvision", specifier = ">=0.25.0" },

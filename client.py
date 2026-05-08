@@ -1,7 +1,9 @@
 import asyncio
 import json
 import math
+import subprocess
 import struct
+import sys
 import time
 from collections import OrderedDict
 
@@ -32,11 +34,12 @@ CAMERA_FPS = int(CLIENT_CONFIG.get("camera_fps", 30))
 JPEG_QUALITY = int(CLIENT_CONFIG.get("jpeg_quality", 60))
 TARGET_FPS = float(CLIENT_CONFIG.get("target_fps", 30))
 MAX_PENDING_FRAMES = int(CLIENT_CONFIG.get("max_pending_frames", 90))
+REALSENSE_FALLBACK_TO_VIDEO = bool(CLIENT_CONFIG.get("realsense_fallback_to_video", True))
+REALSENSE_PROBE_TIMEOUT_S = float(CLIENT_CONFIG.get("realsense_probe_timeout_s", 5.0))
 
 BOUNDARY_TAG_IDS = [int(tag_id) for tag_id in APRILTAG_CONFIG.get("boundary_tag_ids", [10, 11, 12, 13])]
 FIELD_WIDTH_M = float(FIELD_CONFIG.get("width_m", 3.0))
 FIELD_HEIGHT_M = float(FIELD_CONFIG.get("height_m", 2.0))
-ROBOT_TAG_IDS = {int(tag_id): str(name) for tag_id, name in ROBOT_CONFIG.get("tag_ids", {}).items()}
 ROBOT_CENTER_OFFSETS_M = {
     int(tag_id): tuple(float(value) for value in offset)
     for tag_id, offset in ROBOT_CONFIG.get("center_offsets_m", {}).items()
@@ -56,30 +59,98 @@ MAP_WINDOW = DISPLAY_CONFIG.get("map_window", "Robot map")
 HEADER = struct.Struct("!Q")
 
 
+def parse_robot_tag_ids(raw_tag_ids):
+    if isinstance(raw_tag_ids, dict):
+        parsed = {}
+        for raw_tag_id, raw_name in raw_tag_ids.items():
+            tag_id = int(raw_tag_id)
+            parsed[tag_id] = f"robot_{tag_id}" if raw_name in (None, "") else str(raw_name)
+        return parsed
+
+    if isinstance(raw_tag_ids, (list, tuple, set)):
+        return {int(tag_id): f"robot_{int(tag_id)}" for tag_id in raw_tag_ids}
+
+    return {}
+
+
+ROBOT_TAG_IDS = parse_robot_tag_ids(ROBOT_CONFIG.get("tag_ids", {}))
+
+
+def probe_realsense_startup():
+    probe = (
+        "import pyrealsense2 as rs;"
+        "pipeline = rs.pipeline();"
+        "config = rs.config();"
+        f"config.enable_stream(rs.stream.color, {CAMERA_WIDTH}, {CAMERA_HEIGHT}, rs.format.bgr8, {CAMERA_FPS});"
+        "profile = pipeline.start(config);"
+        "pipeline.stop();"
+        "print('ok')"
+    )
+
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True,
+            text=True,
+            timeout=max(REALSENSE_PROBE_TIMEOUT_S, 1.0),
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return False, f"probe timed out after {REALSENSE_PROBE_TIMEOUT_S:.1f}s"
+
+    if result.returncode == 0:
+        return True, ""
+
+    if result.returncode < 0:
+        details = result.stderr.strip() or result.stdout.strip()
+        if details:
+            return False, f"terminated by signal {-result.returncode}: {details}"
+        return False, f"terminated by signal {-result.returncode}"
+
+    details = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
+    return False, details
+
+
 class FrameSource:
     def __init__(self):
         self.pipeline = None
+        self.rs = None
         self.cap = None
 
         if USE_REALSENSE:
-            try:
-                import pyrealsense2 as rs
-            except ImportError as exc:
-                raise RuntimeError("Install pyrealsense2 on the Raspberry Pi.") from exc
+            ok, reason = probe_realsense_startup()
+            if not ok:
+                if not REALSENSE_FALLBACK_TO_VIDEO:
+                    raise RuntimeError(f"RealSense startup probe failed: {reason}")
+                print(
+                    "warning: RealSense startup failed; "
+                    f"falling back to video_source={VIDEO_SOURCE}. Details: {reason}"
+                )
+            else:
+                try:
+                    import pyrealsense2 as rs
+                except ImportError as exc:
+                    raise RuntimeError("Install pyrealsense2 on the Raspberry Pi.") from exc
 
-            self.rs = rs
-            self.pipeline = rs.pipeline()
-            config = rs.config()
-            config.enable_stream(
-                rs.stream.color,
-                CAMERA_WIDTH,
-                CAMERA_HEIGHT,
-                rs.format.bgr8,
-                CAMERA_FPS,
-            )
-            self.pipeline.start(config)
-        else:
-            self.cap = cv2.VideoCapture(VIDEO_SOURCE)
+                self.rs = rs
+                self.pipeline = rs.pipeline()
+                config = rs.config()
+                config.enable_stream(
+                    rs.stream.color,
+                    CAMERA_WIDTH,
+                    CAMERA_HEIGHT,
+                    rs.format.bgr8,
+                    CAMERA_FPS,
+                )
+                self.pipeline.start(config)
+
+        if self.pipeline is None:
+            try:
+                source = int(VIDEO_SOURCE)
+            except (TypeError, ValueError):
+                source = VIDEO_SOURCE
+
+            self.cap = cv2.VideoCapture(source)
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
             self.cap.set(cv2.CAP_PROP_FPS, CAMERA_FPS)
@@ -108,6 +179,18 @@ class AprilTagTracker:
         dictionary = cv2.aruco.getPredefinedDictionary(APRILTAG_DICT)
         parameters = cv2.aruco.DetectorParameters()
         self.detector = cv2.aruco.ArucoDetector(dictionary, parameters)
+        self.calibrated_homography = None
+        self.calibrated_boundary_points_px = None
+
+    def reset_calibration(self):
+        self.calibrated_homography = None
+        self.calibrated_boundary_points_px = None
+
+    def is_calibrated(self):
+        return (
+            self.calibrated_homography is not None
+            and self.calibrated_boundary_points_px is not None
+        )
 
     def detect(self, frame):
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -137,13 +220,17 @@ class AprilTagTracker:
             }
         return tags
 
-    def map_state(self, tags):
+    def _boundary_tags_from(self, tags):
         boundary = [tags.get(tag_id) for tag_id in BOUNDARY_TAG_IDS]
         missing_boundary = [
             tag_id for tag_id, tag in zip(BOUNDARY_TAG_IDS, boundary, strict=False) if tag is None
         ]
+        return boundary, missing_boundary
+
+    def _calibrate_from_tags(self, tags):
+        boundary, missing_boundary = self._boundary_tags_from(tags)
         if missing_boundary:
-            return {"ready": False, "missing_boundary": missing_boundary, "robots": []}
+            return False, missing_boundary
 
         image_points = np.float32([tag["center"] for tag in boundary])
         field_points = np.float32(
@@ -154,7 +241,24 @@ class AprilTagTracker:
                 [0.0, FIELD_HEIGHT_M],
             ]
         )
-        homography = cv2.getPerspectiveTransform(image_points, field_points)
+        self.calibrated_homography = cv2.getPerspectiveTransform(image_points, field_points)
+        self.calibrated_boundary_points_px = image_points
+        return True, []
+
+    def uncalibrated_state(self, tags):
+        _, missing_boundary = self._boundary_tags_from(tags)
+        return {"ready": False, "calibrated": False, "missing_boundary": missing_boundary, "robots": []}
+
+    def map_state(self, tags, allow_calibration=True):
+        _, missing_boundary = self._boundary_tags_from(tags)
+        if not self.is_calibrated():
+            if not allow_calibration:
+                return self.uncalibrated_state(tags)
+            calibrated, missing_boundary = self._calibrate_from_tags(tags)
+            if not calibrated:
+                return {"ready": False, "calibrated": False, "missing_boundary": missing_boundary, "robots": []}
+
+        homography = self.calibrated_homography
 
         robot_ids = set(ROBOT_TAG_IDS) if ROBOT_TAG_IDS else None
         robots = []
@@ -190,8 +294,10 @@ class AprilTagTracker:
 
         return {
             "ready": True,
+            "calibrated": True,
             "homography": homography,
-            "boundary_points_px": image_points,
+            "boundary_points_px": self.calibrated_boundary_points_px,
+            "missing_boundary": missing_boundary,
             "robots": robots,
         }
 
@@ -213,6 +319,43 @@ def color_for_id(object_id):
     )
 
 
+def boundary_polygon(boundary_points):
+    return np.round(np.asarray(boundary_points, dtype=np.float32)).astype(np.int32)
+
+
+def mask_frame_to_boundary(frame, boundary_points):
+    polygon = boundary_polygon(boundary_points)
+    mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+    cv2.fillPoly(mask, [polygon], 255)
+    return cv2.bitwise_and(frame, frame, mask=mask)
+
+
+def filter_objects_to_boundary(objects, boundary_points):
+    polygon = np.asarray(boundary_points, dtype=np.float32).reshape(-1, 1, 2)
+    filtered = []
+    for obj in objects:
+        center = obj.get("center")
+        if center is None:
+            continue
+        if cv2.pointPolygonTest(polygon, (float(center[0]), float(center[1])), False) >= 0:
+            filtered.append(obj)
+    return filtered
+
+
+def draw_segmentation_status(frame, text):
+    cv2.putText(
+        frame,
+        text,
+        (20, 40),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.9,
+        (255, 255, 255),
+        2,
+        cv2.LINE_AA,
+    )
+    return frame
+
+
 def draw_tag_overlay(frame, tags, state):
     for tag_id, tag in tags.items():
         color = (90, 220, 90) if tag_id in BOUNDARY_TAG_IDS else color_for_id(tag_id)
@@ -232,7 +375,7 @@ def draw_tag_overlay(frame, tags, state):
         )
 
     if state.get("ready"):
-        boundary = state["boundary_points_px"].astype(np.int32)
+        boundary = boundary_polygon(state["boundary_points_px"])
         cv2.polylines(frame, [boundary], isClosed=True, color=(0, 255, 255), thickness=2)
         for robot in state["robots"]:
             center = tuple(robot["tag_center_px"].astype(int))
@@ -254,6 +397,18 @@ def draw_tag_overlay(frame, tags, state):
             cv2.FONT_HERSHEY_SIMPLEX,
             0.8,
             (0, 200, 255),
+            2,
+            cv2.LINE_AA,
+        )
+
+    if state.get("calibrated"):
+        cv2.putText(
+            frame,
+            "floor locked  (r=recalibrate)",
+            (20, frame.shape[0] - 20),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (80, 230, 80),
             2,
             cv2.LINE_AA,
         )
@@ -307,6 +462,16 @@ def draw_map(state):
         cv2.FONT_HERSHEY_SIMPLEX,
         0.75,
         (30, 30, 30),
+        2,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        canvas,
+        "Floor locked. Press r to recalibrate.",
+        (35, 78),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.6,
+        (40, 120, 40),
         2,
         cv2.LINE_AA,
     )
@@ -386,9 +551,19 @@ async def send_frames(websocket, pending, stop):
                 break
 
             tags = tracker.detect(frame)
+            was_calibrated = tracker.is_calibrated()
             state = tracker.map_state(tags)
+            if not was_calibrated and state.get("ready"):
+                print("Floor calibration locked. Press r to recalibrate.")
+
             display_frame = draw_tag_overlay(frame.copy(), tags, state)
             map_frame = draw_map(state)
+            if not state.get("ready"):
+                contour_frame = draw_segmentation_status(
+                    display_frame.copy(),
+                    "Segmentation paused until floor calibration is locked.",
+                )
+                cv2.imshow(CONTOUR_WINDOW, contour_frame)
 
             cv2.imshow(CAMERA_WINDOW, display_frame)
             cv2.imshow(MAP_WINDOW, map_frame)
@@ -396,10 +571,33 @@ async def send_frames(websocket, pending, stop):
             if key in (27, ord("q")):
                 stop.set()
                 break
+            if key in (ord("r"), ord("R")):
+                tracker.reset_calibration()
+                pending.clear()
+                print("Floor calibration reset. Show all boundary tags to calibrate again.")
+                state = tracker.map_state(tags, allow_calibration=False)
+                display_frame = draw_tag_overlay(frame.copy(), tags, state)
+                map_frame = draw_map(state)
+                contour_frame = draw_segmentation_status(
+                    display_frame.copy(),
+                    "Segmentation paused until floor calibration is locked.",
+                )
+                cv2.imshow(CAMERA_WINDOW, display_frame)
+                cv2.imshow(MAP_WINDOW, map_frame)
+                cv2.imshow(CONTOUR_WINDOW, contour_frame)
 
+            if not state.get("ready"):
+                sleep_for = frame_period - (time.perf_counter() - loop_start)
+                if sleep_for > 0:
+                    await asyncio.sleep(sleep_for)
+                else:
+                    await asyncio.sleep(0)
+                continue
+
+            masked_frame = mask_frame_to_boundary(frame, state["boundary_points_px"])
             ok, jpg = cv2.imencode(
                 ".jpg",
-                frame,
+                masked_frame,
                 [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY],
             )
             if not ok:
@@ -431,7 +629,12 @@ async def receive_contours(websocket, pending, stop):
 
         frame, sent_time, state = item
         e2e_ms = (time.perf_counter() - sent_time) * 1000.0
-        frame = draw_sam_result(frame, result, e2e_ms)
+        objects = result.get("objects", [])
+        if state.get("ready"):
+            objects = filter_objects_to_boundary(objects, state["boundary_points_px"])
+        filtered_result = dict(result)
+        filtered_result["objects"] = objects
+        frame = draw_sam_result(frame, filtered_result, e2e_ms)
 
         cv2.imshow(CONTOUR_WINDOW, frame)
         print(
@@ -439,7 +642,7 @@ async def receive_contours(websocket, pending, stop):
             f"inference_ms={result.get('inference_ms', 0.0):.1f} "
             f"e2e_ms={e2e_ms:.1f} "
             f"robots={len(state.get('robots', []))} "
-            f"sam_objects={len(result.get('objects', []))}"
+            f"sam_objects={len(objects)}"
         )
 
 
