@@ -16,9 +16,9 @@ dependencies = [
 ]
 
 [project.scripts]
-theteam-client = "client.app:run"
-theteam-server = "server.app:run"
-theteam-robot = "robot.app:main"
+client = "client.app:run"
+server = "server.app:run"
+robot = "robot.app:main"
 
 [build-system]
 requires = ["hatchling"]
