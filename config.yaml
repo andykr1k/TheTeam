@@ -10,7 +10,7 @@ server:
   keep_processed_frames: 4
 
 client:
-  server_url: "ws://141.212.114.250:8765"
+  server_url: "ws://<ip>:8765"
   use_realsense: true
   realsense_fallback_to_video: true
   video_source: 0
@@ -44,7 +44,7 @@ robots:
   heading_offset_rad: 0.0
 
 mbot:
-  pose_stream_url: "ws://141.212.114.250:8766"
+  pose_stream_url: "ws://<ip>:8766"
   robot_tag_id: 4
   reconnect_delay_s: 1.0
 
