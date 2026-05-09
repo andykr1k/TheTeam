@@ -1,125 +1,181 @@
 # TheTeam
 
-Low-latency robot tracking with a Raspberry Pi + RealSense client and an H100
-SAM3 server.
+Client-centered multirobot tracking for a private robot LAN.
+
+The camera client owns the live feed, computes AprilTag/global poses, sends
+frames to the SAM3 server over WebRTC, receives contour-only segmentation
+results, renders the dashboard, and publishes per-robot ROS2 topics. The SAM3
+server never joins ROS2. Robots never use WebRTC.
+
+## Project Layout
+
+```text
+client/
+  app.py              # camera loop, WebRTC client, dashboard, ROS2 gateway
+  dashboard.py        # browser dashboard and MJPEG stream
+  ros2_gateway.py     # per-robot ROS2 publishers
+common/
+  messages.py         # shared packet/dataclass schemas
+  webrtc_transport.py # WebRTC signaling and data channels
+robot/
+  app.py              # per-robot ROS2 subscriber
+server/
+  app.py              # WebRTC signaling server and SAM3 session loop
+  segmentation.py     # SAM3 loading/inference and mask-to-contour conversion
+vision/
+  tracking.py         # AprilTags, homography, robot pose estimates
+  visualization.py    # annotated camera feed renderer
+
+config.py             # loads config.yaml
+config.yaml           # all runtime/network configuration
+```
+
+## Install
+
+```bash
+uv sync
+```
+
+ROS2 Python packages such as `rclpy`, `geometry_msgs`, and `std_msgs` are
+expected to come from your ROS2 installation, not PyPI.
+
+## Configure
+
+All runtime and network settings live in `config.yaml`.
+
+Important sections:
+
+- `server.sam3`: model, device, dtype, contour filtering, inference worker count.
+- `server.webrtc`: signaling bind address, offer path, ICE servers, data channel names.
+- `client.camera`: RealSense/video source settings.
+- `client.webrtc`: server offer URL, JPEG quality, target FPS, backpressure limits.
+- `client.dashboard`: browser dashboard host/port/routes.
+- `apriltags` and `field`: floor calibration and field dimensions.
+- `robots`: robot tag IDs, names, ROS namespaces, offsets, global-state policy.
+- `ros2`: ROS domain, RMW implementation, QoS, and private LAN binding.
+- `robot_runtime`: the single robot identity used by `robot/app.py`.
+
+Set the client to reach the SAM3 server:
+
+```yaml
+client:
+  webrtc:
+    server_offer_url: "http://<server-ip>:8765/offer"
+```
+
+Set each robot entry explicitly:
+
+```yaml
+robots:
+  publish_global_state: false
+  entries:
+    - tag_id: 4
+      name: "robot_4"
+      ros_namespace: "/robots/robot_4"
+      center_offset_m: [0.0, 0.0]
+      allow_global_state: false
+```
+
+Set the runtime identity on each robot:
+
+```yaml
+robot_runtime:
+  name: "robot_4"
+  ros_namespace: "/robots/robot_4"
+```
 
 ## Run
 
-On the H100 machine:
+Preferred console scripts:
 
 ```bash
-uv run python server.py
+uv run theteam-server
+uv run theteam-client
+uv run theteam-robot
 ```
 
-On the Raspberry Pi or camera machine, edit `client.server_url` in `config.yaml`
-to use the H100 machine's LAN IP:
-
-```yaml
-client:
-  server_url: "ws://<ip>:8765"
-```
-
-For a RealSense camera, also set:
-
-```yaml
-client:
-  use_realsense: true
-  realsense_fallback_to_video: true
-```
-
-If RealSense startup fails, the client will fall back to `client.video_source`
-instead of crashing the whole process.
-
-Then run:
+Equivalent module commands:
 
 ```bash
-uv run python client.py
+uv run python -m server.app
+uv run python -m client.app
+uv run python -m robot.app
 ```
 
-The client also starts a pose websocket for robot subscribers:
+Open the dashboard:
 
-```yaml
-pose_stream:
-  host: "0.0.0.0"
-  port: 8766
+```text
+http://<client-ip>:8080/
 ```
 
-Each connected robot can subscribe to that pose stream and filter down to its
-own AprilTag ID with `mbot.py`.
+## Dashboard
 
-If `pyrealsense2` is not installed on the Pi, install Intel RealSense support
-there first. The current pipeline only streams RGB frames; depth is not needed
-for the top-down floor homography.
+The client serves a modern monitoring dashboard with:
 
-## AprilTag Layout
+- live annotated camera feed
+- live field map in its own section
+- compact top-line client/server stats
+- SAM3 contours
+- AprilTag detections
+- robot pose labels
+- WebRTC state and frame counts
+- server inference/end-to-end latency
+- client camera FPS and calibration state
+- ROS2 gateway state
+- per-robot visibility, pose, pose age, and namespace
 
-The client automatically detects all AprilTags in the camera image. No manual
-pixel coordinates are needed.
+Dashboard routes are configured under `client.dashboard`.
 
-At startup, the client locks the floor plane the first time it sees all four
-boundary tags. After that, robot tags continue tracking against the frozen
-plane even if the boundary tags move or leave view. Press `r` in the client
-window any time you want to clear that calibration and lock a new floor plane.
-SAM segmentation is paused until that floor calibration is locked, and once it
-is locked the client only sends pixels from inside the calibrated floor
-boundary to the segmentation server.
+## WebRTC Flow
 
-Set the four floor boundary tags in clockwise order in `config.yaml`:
+WebRTC is used only between the client and SAM3 server.
+
+The client opens two data channels:
+
+- `camera_frames`: chunked JPEG frames from client to server
+- `sam3_contours`: contour-only JSON from server to client
+
+Each frame carries:
+
+- `frame_id`
+- `capture_unix_ns`
+- `capture_monotonic_ns`
+- dimensions
+- `homography_version`
+
+The server echoes timing metadata in the contour packet. The client matches
+contours back to pending frames by `frame_id` and drops stale results.
+
+## ROS2 Topics
+
+ROS2 stays on the private LAN and is published only by the client gateway.
+
+Default per-robot topics:
+
+```text
+/robots/<name>/pose              geometry_msgs/msg/PoseStamped
+/robots/<name>/location          geometry_msgs/msg/PointStamped
+/robots/<name>/tracking_status   std_msgs/msg/String
+```
+
+Global state is off by default. If `robots.publish_global_state` is enabled,
+only robots with `allow_global_state: true` are included:
+
+```text
+/team/tracking_state             std_msgs/msg/String
+```
+
+For hard access isolation, add SROS2 permissions at deployment time.
+
+## AprilTag Calibration
+
+Boundary tags must be ordered top-left, top-right, bottom-right, bottom-left:
 
 ```yaml
 apriltags:
-  boundary_tag_ids: [10, 11, 12, 13]  # top-left, top-right, bottom-right, bottom-left
-field:
-  width_m: 3.0
-  height_m: 2.0
+  boundary_tag_ids: [0, 1, 2, 3]
 ```
 
-Every non-boundary tag is treated as a robot by default. To restrict or name
-robots, set:
-
-```yaml
-robots:
-  tag_ids:
-    21: "robot_1"
-    22: "robot_2"
-```
-
-If a tag is not mounted at the robot center, set a robot-frame offset:
-
-```yaml
-robots:
-  center_offsets_m:
-    21: [0.08, 0.0]  # forward_m, left_m
-```
-
-Those robot names are included in the pose stream, but each `mbot.py` instance
-selects its own robot by `mbot.robot_tag_id` in `config.yaml`.
-
-## Mbot Subscriber
-
-Run this on each robot:
-
-```bash
-uv run python mbot.py
-```
-
-Per robot, change the config to point at the camera client's pose stream and to
-select the desired tracked tag:
-
-```yaml
-mbot:
-  pose_stream_url: "ws://<camera-client-ip>:8766"
-  robot_tag_id: 21
-```
-
-`mbot.py` prints JSON lines containing only that robot's `x`, `y`, and
-`theta`, plus the tag ID/name and timing metadata. Human-readable connection
-status goes to stderr so stdout stays machine-friendly.
-
-## Windows
-
-The client opens three live views:
-
-- `AprilTag camera`: camera frame with detected boundary and robot tags.
-- `Robot map`: top-down field map with robot position and heading.
-- `SAM3 contours`: returned SAM3 contours overlaid on the matching camera frame.
+The client locks the floor homography once all boundary tags are visible. SAM3
+frames are masked to that calibrated field boundary before they are sent to the
+server.

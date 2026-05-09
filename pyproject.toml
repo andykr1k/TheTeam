@@ -5,11 +5,24 @@ description = "Multirobot Tracking System"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "aiohttp>=3.13.2",
+    "aiortc>=1.14.0",
     "opencv-python>=4.13.0.92",
     "pyrealsense2-macosx>=2.56.5",
     "pyyaml>=6.0.3",
     "torch==2.10.0",
     "torchvision>=0.25.0",
     "transformers>=5.8.0",
-    "websockets>=15.0.1",
 ]
+
+[project.scripts]
+theteam-client = "client.app:run"
+theteam-server = "server.app:run"
+theteam-robot = "robot.app:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["client", "common", "robot", "server", "vision"]

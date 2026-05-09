@@ -1,56 +1,109 @@
 server:
-  host: "0.0.0.0"
-  port: 8765
-  prompt: "robot"
-  model_id: "facebook/sam3"
-  device: "cuda:7"
-  dtype: "bfloat16"
-  min_contour_area: 80
-  approx_epsilon: 1.5
-  keep_processed_frames: 4
+  sam3:
+    prompt: "robot"
+    model_id: "facebook/sam3"
+    device: "cuda:7"
+    dtype: "bfloat16"
+    min_contour_area: 80
+    approx_epsilon: 1.5
+    keep_processed_frames: 4
+    inference_workers: 1
+
+  webrtc:
+    signaling_host: "0.0.0.0"
+    signaling_port: 8765
+    signaling_path: "/offer"
+    health_path: "/healthz"
+    ice_servers: []
+    frame_channel: "camera_frames"
+    contour_channel: "sam3_contours"
+    frame_ordered: false
+    frame_max_retransmits: 0
+    chunk_size_bytes: 49152
+    max_pending_frame_assemblies: 16
 
 client:
-  server_url: "ws://<ip>:8765"
-  use_realsense: true
-  realsense_fallback_to_video: true
-  video_source: 0
-  camera_width: 1280
-  camera_height: 720
-  camera_fps: 30
-  jpeg_quality: 60
-  target_fps: 30
-  max_pending_frames: 90
+  camera:
+    use_realsense: true
+    realsense_fallback_to_video: true
+    realsense_probe_timeout_s: 5.0
+    video_source: 0
+    width: 1280
+    height: 720
+    fps: 30
 
-pose_stream:
-  enabled: true
-  host: "0.0.0.0"
-  port: 8766
+  webrtc:
+    server_offer_url: "http://127.0.0.1:8765/offer"
+    ice_servers: []
+    jpeg_quality: 60
+    target_fps: 30
+    max_pending_frames: 90
+    reconnect_delay_s: 1.0
+    connect_timeout_s: 10.0
+    datachannel_buffer_limit_bytes: 1048576
+    stale_contour_ms: 500
+
+  dashboard:
+    enabled: true
+    host: "0.0.0.0"
+    port: 8080
+    path: "/"
+    stream_path: "/stream.mjpg"
+    map_stream_path: "/map.mjpg"
+    stats_path: "/api/stats"
+    health_path: "/healthz"
+    stats_poll_ms: 500
+    jpeg_quality: 80
+    window_title: "TheTeam Live Dashboard"
 
 apriltags:
   dictionary: "DICT_APRILTAG_36h11"
   detect_scale: 1.0
   # Boundary tags must be ordered: top-left, top-right, bottom-right, bottom-left.
-  boundary_tag_ids: [0,1,2,3]
+  boundary_tag_ids: [0, 1, 2, 3]
 
 field:
+  frame_id: "field"
   width_m: 3.0
   height_m: 2.0
 
 robots:
-  # Empty means every non-boundary tag is treated as a robot.
-  tag_ids: [4, 5, 6]
-  # Per robot tag id: [forward_m, left_m].
-  center_offsets_m: {}
+  publish_global_state: false
   heading_offset_rad: 0.0
+  entries:
+    - tag_id: 4
+      name: "robot_4"
+      ros_namespace: "/robots/robot_4"
+      center_offset_m: [0.0, 0.0]
+      allow_global_state: false
+    - tag_id: 5
+      name: "robot_5"
+      ros_namespace: "/robots/robot_5"
+      center_offset_m: [0.0, 0.0]
+      allow_global_state: false
+    - tag_id: 6
+      name: "robot_6"
+      ros_namespace: "/robots/robot_6"
+      center_offset_m: [0.0, 0.0]
+      allow_global_state: false
 
-mbot:
-  pose_stream_url: "ws://<ip>:8766"
-  robot_tag_id: 4
-  reconnect_delay_s: 1.0
+ros2:
+  enabled: true
+  domain_id: 42
+  rmw_implementation: "rmw_cyclonedds_cpp"
+  private_lan:
+    interface: "eth1"
+    bind_address: "192.168.50.1"
+    subnet_cidr: "192.168.50.0/24"
+    enforce_interface: false
+  qos:
+    pose_reliability: "best_effort"
+    pose_history_depth: 1
+    
+robot_runtime:
+  name: "robot_4"
+  ros_namespace: "/robots/robot_4"
 
 display:
-  map_size: [900, 650]
-  map_margin: 60
-  contour_window: "SAM3 contours"
-  camera_window: "AprilTag camera"
-  map_window: "Robot map"
+  map_size: [420, 300]
+  map_margin: 28
